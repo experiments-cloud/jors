@@ -1,0 +1,24 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Solver temporary files
+*.lp
+*.mst
+*.sol
+*_tmp*
+_tmp*
+
+# Sensitive local anonymization mapping
+scripts/anonymization_map_LOCAL.csv
+
+# OS files
+.DS_Store
+Thumbs.db
