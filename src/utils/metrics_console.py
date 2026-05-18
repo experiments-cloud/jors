@@ -1,60 +1,79 @@
-# bdtec_metricas.py
-# ==========================================================================================
-# DASHBOARD DE MÉTRICAS (solo lectura, salida por consola + CSV opcional)
-# ------------------------------------------------------------------------------------------
-# Ajustado para:
-#   - Periodo fijo 20251 (o TARGET_PERIOD / MODEL_PERIODO normalizado)
-#   - Alcance ISC por grupos priorizando exclusivo_carrera / exclusivo_reticula
-#   - Fallback a carrera / reticula
-#   - Último fallback: materias_carreras
-#   - Exclusión explícita de NO ESCOLARIZADA (EXCLUDE_CARRERA_LIKE)
-#   - AT exactas reales desde MODEL_AT_LIST
-#   - AL exactas reales desde MODEL_AL_LIST_REAL (o MODEL_AL_LIST como fallback)
-#   - Alias visuales opcionales para laboratorios vía LAB_ALIAS_MAP_JSON
-#   - Validación robusta contra catálogo de aulas y tipo_aula
-#   - Advertencia explícita cuando AL no está configurada
-#   - Lista de laboratorios candidatos del catálogo para apoyar la selección de las 9 AL de ISC
-# ------------------------------------------------------------------------------------------
+"""
+Metrics Console
+===============
 
-import os
-import re
+Read-only console utility for inspecting database-level metrics used by the
+Academic Timetabling MILP repository.
+
+This script summarizes institutional source data, room catalogs, configured
+room sets, course groups, and validation checks before generating model-ready
+instances.
+
+Main responsibilities
+---------------------
+- Load local configuration from `.env`.
+- Connect to the configured MySQL database in read-only diagnostic mode.
+- Report high-level database metrics.
+- Validate configured theory and laboratory room sets.
+- Export optional diagnostic CSV files.
+
+Notes
+-----
+This script may refer to database table and column names such as `aulas`,
+`horarios`, `grupos`, and `materias`. These names are preserved because they
+belong to the source database schema and should not be translated in SQL code.
+"""
+
+from __future__ import annotations
+
 import csv
 import json
+import os
+import re
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
 import mysql.connector
 from dotenv import load_dotenv
 
-# ------------------------------------------------------------------------------------------
-# 1) Cargar .env y helpers
-# ------------------------------------------------------------------------------------------
+
+# -----------------------------------------------------------------------------
+# Environment loading and helper functions
+# -----------------------------------------------------------------------------
+
 load_dotenv()
 
 
-def get_env(key, default=None, required=False):
-    v = os.getenv(key, default)
-    if required and (v is None or str(v).strip() == ""):
-        raise RuntimeError(f"Variable de entorno faltante: {key}")
-    return v
+def get_env(key: str, default: Optional[str] = None, required: bool = False) -> Optional[str]:
+    """Read an environment variable with optional required validation."""
+    value = os.getenv(key, default)
+    if required and (value is None or str(value).strip() == ""):
+        raise RuntimeError(f"Missing required environment variable: {key}")
+    return value
 
 
-def parse_bool(key, default=False):
+def parse_bool(key: str, default: bool = False) -> bool:
+    """Parse a boolean environment variable."""
     raw = os.getenv(key)
     if raw is None:
         return bool(default)
-    return str(raw).strip().lower() in ("1", "true", "yes", "y", "si", "sí")
+    return str(raw).strip().lower() in {"1", "true", "yes", "y", "si", "s"}
 
 
-def parse_env_list(key, default_list=None):
+def parse_env_list(key: str, default_list: Optional[Sequence[str]] = None) -> List[str]:
+    """Parse a comma- or semicolon-separated environment list."""
     raw = (os.getenv(key) or "").strip()
     if raw:
         parts = re.split(r"[;,]", raw)
-        return [p.strip().upper() for p in parts if p.strip()]
-    return [str(x).strip().upper() for x in (default_list or []) if str(x).strip()]
+        return [part.strip().upper() for part in parts if part.strip()]
+    return [str(item).strip().upper() for item in (default_list or []) if str(item).strip()]
 
 
-def parse_json_env(key, default=None):
+def parse_json_env(key: str, default: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Parse a JSON dictionary stored in an environment variable."""
     raw = (os.getenv(key) or "").strip()
     if not raw:
         return default if default is not None else {}
+
     try:
         obj = json.loads(raw)
         return obj if isinstance(obj, dict) else (default if default is not None else {})
@@ -62,55 +81,66 @@ def parse_json_env(key, default=None):
         return default if default is not None else {}
 
 
-def _norm_room(x):
+def _norm_room(value: Any) -> str:
     """
-    Normaliza aulas para comparación:
-    - trim
-    - upper
-    - elimina espacios y guiones
+    Normalize room identifiers for comparison.
 
-    Ejemplos:
-      'F-19' -> 'F19'
-      ' ff1 ' -> 'FF1'
+    The normalization removes surrounding spaces, converts text to uppercase,
+    and removes spaces and hyphens.
+
+    Examples
+    --------
+    'F-19' -> 'F19'
+    ' ff1 ' -> 'FF1'
     """
-    if x is None:
+    if value is None:
         return ""
-    s = str(x).strip().upper()
-    s = s.replace(" ", "").replace("-", "")
-    return s
+
+    text = str(value).strip().upper()
+    text = text.replace(" ", "").replace("-", "")
+    return text
 
 
-def _norm_period(s):
-    return re.sub(r"\D", "", str(s or "").strip())
+def _norm_period(value: Any) -> str:
+    """Normalize period identifiers by keeping only digits."""
+    return re.sub(r"\D", "", str(value or "").strip())
 
 
-def _like_value(s):
-    return f"%{str(s).strip().upper()}%"
+def _like_value(value: Any) -> str:
+    """Build a SQL LIKE value in uppercase."""
+    return f"%{str(value).strip().upper()}%"
 
 
-def _nonnull_trim_sql(alias, col):
+def _nonnull_trim_sql(alias: str, col: str) -> str:
     """
-    Regresa expresión SQL segura en MySQL:
-        NULLIF(TRIM(CAST(alias.`col` AS CHAR)), '')
+    Return a safe MySQL expression for non-empty trimmed values.
+
+    Example
+    -------
+    NULLIF(TRIM(CAST(alias.`col` AS CHAR)), '')
     """
     return f"NULLIF(TRIM(CAST({alias}.`{col}` AS CHAR)), '')"
 
 
-def print_title(t):
-    print("\n" + "=" * len(t))
-    print(t)
-    print("=" * len(t))
+def print_title(text: str) -> None:
+    """Print a formatted console title."""
+    print("\n" + "=" * len(text))
+    print(text)
+    print("=" * len(text))
 
 
-def print_line(label, value, width=42):
+def print_line(label: str, value: Any, width: int = 42) -> None:
+    """Print a formatted key-value line."""
     print(f"{label:>{width}}: {value}")
 
 
-def qual(schema, table):
+def qual(schema: str, table: str) -> str:
+    """Return a fully qualified MySQL table name."""
     return f"`{schema}`.`{table}`"
 
 
-def has_table(cur, schema, name):
+def has_table(cur, schema: str, name: str) -> bool:
+    """Return True when a table exists in the selected schema."""
     cur.execute(
         """
         SELECT COUNT(*)
@@ -122,90 +152,105 @@ def has_table(cur, schema, name):
     return cur.fetchone()[0] > 0
 
 
-def table_columns(cur, schema, table):
+def table_columns(cur, schema: str, table: str) -> List[str]:
+    """Return the column names of a MySQL table."""
     cur.execute(f"DESCRIBE {qual(schema, table)}")
-    return [r[0] for r in cur.fetchall()]
+    return [row[0] for row in cur.fetchall()]
 
 
-def pick_column(cols, candidates):
-    for c in candidates:
-        if c in cols:
-            return c
+def pick_column(cols: Sequence[str], candidates: Sequence[str]) -> Optional[str]:
+    """Pick the first available column from a candidate list."""
+    for candidate in candidates:
+        if candidate in cols:
+            return candidate
     return None
 
 
-def run_scalar(cur, sql, params=None):
+def run_scalar(cur, sql: str, params: Optional[Sequence[Any]] = None) -> Any:
+    """Run a SQL query and return the first scalar value."""
     cur.execute(sql, params or ())
     row = cur.fetchone()
     return row[0] if row else None
 
 
-def fetchall(cur, sql, params=None):
+def fetchall(cur, sql: str, params: Optional[Sequence[Any]] = None) -> List[Tuple[Any, ...]]:
+    """Run a SQL query and return all rows."""
     cur.execute(sql, params or ())
     return cur.fetchall()
 
 
-def _export_csv(path, header, rows):
+def _export_csv(path: str, header: Optional[Sequence[str]], rows: Iterable[Any]) -> None:
+    """Export rows to CSV when diagnostic export is enabled."""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
+        with open(path, "w", newline="", encoding="utf-8") as file:
+            writer = csv.writer(file)
             if header:
-                w.writerow(header)
-            for r in rows:
-                if isinstance(r, (list, tuple)):
-                    w.writerow(list(r))
+                writer.writerow(header)
+            for row in rows:
+                if isinstance(row, (list, tuple)):
+                    writer.writerow(list(row))
                 else:
-                    w.writerow([r])
-        print_line("CSV exportado", path)
-    except Exception as e:
-        print_line("CSV error", str(e))
+                    writer.writerow([row])
+        print_line("CSV exported", path)
+    except Exception as exc:
+        print_line("CSV export error", str(exc))
 
 
-def _where_clause(parts):
+def _where_clause(parts: Sequence[str]) -> str:
+    """Build a SQL WHERE clause from a list of conditions."""
     return ("WHERE " + " AND ".join(parts)) if parts else ""
 
 
-# ------------------------------------------------------------------------------------------
-# 2) Room helpers (AT/AL exactas reales)
-# ------------------------------------------------------------------------------------------
-def _is_at_room(room, at_exact):
+# -----------------------------------------------------------------------------
+# Room helper functions for exact AT/AL sets
+# -----------------------------------------------------------------------------
+
+def _is_at_room(room: str, at_exact: set[str]) -> bool:
+    """Return True when a room belongs to the theory-room set."""
     return room in at_exact
 
 
-def _is_al_room(room, al_exact):
+def _is_al_room(room: str, al_exact: set[str]) -> bool:
+    """Return True when a room belongs to the laboratory-room set."""
     return room in al_exact
 
 
-def _room_allowed(room, at_exact, al_exact):
+def _room_allowed(room: str, at_exact: set[str], al_exact: set[str]) -> bool:
+    """Return True when a room is allowed by either exact room set."""
     return room in at_exact or room in al_exact
 
 
-def _catalog_rooms_in_at(A_set, at_exact):
-    return sorted([a for a in A_set if a in at_exact])
+def _catalog_rooms_in_at(room_set: set[str], at_exact: set[str]) -> List[str]:
+    """Return catalog rooms included in the theory-room set."""
+    return sorted([room for room in room_set if room in at_exact])
 
 
-def _catalog_rooms_in_al(A_set, al_exact):
-    return sorted([a for a in A_set if a in al_exact])
+def _catalog_rooms_in_al(room_set: set[str], al_exact: set[str]) -> List[str]:
+    """Return catalog rooms included in the laboratory-room set."""
+    return sorted([room for room in room_set if room in al_exact])
 
 
-def _catalog_rooms_outside(A_set, at_exact, al_exact):
-    return sorted([a for a in A_set if a not in at_exact and a not in al_exact])
+def _catalog_rooms_outside(room_set: set[str], at_exact: set[str], al_exact: set[str]) -> List[str]:
+    """Return catalog rooms outside the configured theory/lab room sets."""
+    return sorted([room for room in room_set if room not in at_exact and room not in al_exact])
 
 
-def _dict_reverse_unique(alias_to_real):
-    out = {}
+def _dict_reverse_unique(alias_to_real: Dict[str, str]) -> Dict[str, str]:
+    """Build a real-room to visual-alias dictionary without duplicates."""
+    output = {}
     for alias, real in alias_to_real.items():
-        real_n = _norm_room(real)
-        alias_n = str(alias).strip().upper()
-        if real_n and alias_n and real_n not in out:
-            out[real_n] = alias_n
-    return out
+        real_normalized = _norm_room(real)
+        alias_normalized = str(alias).strip().upper()
+        if real_normalized and alias_normalized and real_normalized not in output:
+            output[real_normalized] = alias_normalized
+    return output
 
 
-# ------------------------------------------------------------------------------------------
-# 3) Configuración
-# ------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+
 DB_CFG = {
     "host": get_env("DB_HOST", "localhost"),
     "port": int(get_env("DB_PORT", "3306")),
@@ -214,7 +259,7 @@ DB_CFG = {
     "database": get_env("DB_NAME", required=True),
 }
 
-EXPORT_DIR = get_env("EXPORT_DIR", "salidas").strip()
+EXPORT_DIR = str(get_env("EXPORT_DIR", "outputs") or "outputs").strip()
 EXPORT_CSV = parse_bool("EXPORT_CSV", False)
 os.makedirs(EXPORT_DIR, exist_ok=True)
 
@@ -225,86 +270,108 @@ if not TARGET_PERIOD:
 ONLY_TARGET_PERIOD = parse_bool("ONLY_TARGET_PERIOD", True)
 MULTI_PERIODS_RAW = (os.getenv("MULTI_PERIODS") or "").strip() if not ONLY_TARGET_PERIOD else ""
 
-MODEL_CARRERA_LIKE = str(get_env("MODEL_CARRERA_LIKE", "SISTEM")).strip().upper()
-MODEL_NIVEL = str(get_env("MODEL_NIVEL", "L")).strip().upper()
-EXCLUDE_CARRERA_LIKE = str(get_env("EXCLUDE_CARRERA_LIKE", "NO ESCOLARIZADA")).strip().upper()
+MODEL_CARRERA_LIKE = str(get_env("MODEL_CARRERA_LIKE", "SISTEM") or "SISTEM").strip().upper()
+MODEL_NIVEL = str(get_env("MODEL_NIVEL", "L") or "L").strip().upper()
+EXCLUDE_CARRERA_LIKE = str(get_env("EXCLUDE_CARRERA_LIKE", "NO ESCOLARIZADA") or "NO ESCOLARIZADA").strip().upper()
 
-DEFAULT_AT = ["FF1", "FF2", "FF3", "FF4", "FF5", "FF6", "FF7", "FF8", "FF9", "FFA", "FFB", "FFC", "FFD"]
+DEFAULT_AT = [
+    "FF1",
+    "FF2",
+    "FF3",
+    "FF4",
+    "FF5",
+    "FF6",
+    "FF7",
+    "FF8",
+    "FF9",
+    "FFA",
+    "FFB",
+    "FFC",
+    "FFD",
+]
 
-AT_LIST = [_norm_room(x) for x in parse_env_list("MODEL_AT_LIST", default_list=DEFAULT_AT)]
+AT_LIST = [_norm_room(item) for item in parse_env_list("MODEL_AT_LIST", default_list=DEFAULT_AT)]
 
-# Nuevo flujo: preferir MODEL_AL_LIST_REAL; fallback a MODEL_AL_LIST por compatibilidad
 AL_REAL_RAW = parse_env_list("MODEL_AL_LIST_REAL", default_list=[])
 if not AL_REAL_RAW:
     AL_REAL_RAW = parse_env_list("MODEL_AL_LIST", default_list=[])
 
-AL_REAL_LIST = [_norm_room(x) for x in AL_REAL_RAW]
+AL_REAL_LIST = [_norm_room(item) for item in AL_REAL_RAW]
 
 LAB_ALIAS_MAP = parse_json_env("LAB_ALIAS_MAP_JSON", default={})
-LAB_ALIAS_MAP = {str(k).strip().upper(): _norm_room(v) for k, v in LAB_ALIAS_MAP.items() if str(k).strip() and str(v).strip()}
+LAB_ALIAS_MAP = {
+    str(key).strip().upper(): _norm_room(value)
+    for key, value in LAB_ALIAS_MAP.items()
+    if str(key).strip() and str(value).strip()
+}
 REAL_TO_ALIAS = _dict_reverse_unique(LAB_ALIAS_MAP)
 
 STRICT_ROOMSETS = parse_bool("STRICT_ROOMSETS", True)
 SEM1_EXTRAS = parse_env_list("SEM1_EXTRAS", default_list=[])
 
 
-# ------------------------------------------------------------------------------------------
-# 4) Multi-period helpers
-# ------------------------------------------------------------------------------------------
-def _detect_period_column(cur, schema, table="grupos"):
+# -----------------------------------------------------------------------------
+# Multi-period helper functions
+# -----------------------------------------------------------------------------
+
+def _detect_period_column(cur, schema: str, table: str = "grupos") -> Optional[str]:
+    """Detect the period column in a table when available."""
     if not has_table(cur, schema, table):
         return None
     cols = table_columns(cur, schema, table)
     return pick_column(cols, ["periodo"])
 
 
-def _fetch_periods_from_db(cur, schema, limit=None):
+def _fetch_periods_from_db(cur, schema: str, limit: Optional[int] = None) -> List[str]:
+    """Fetch available period identifiers from the groups table."""
     colp = _detect_period_column(cur, schema, "grupos")
     if not colp:
         return []
+
     sql = f"SELECT DISTINCT `{colp}` AS p FROM {qual(schema, 'grupos')} ORDER BY `{colp}` DESC"
     if limit:
         sql += f" LIMIT {int(limit)}"
+
     try:
-        return [str(r[0]) for r in fetchall(cur, sql) if r and r[0] is not None]
+        return [str(row[0]) for row in fetchall(cur, sql) if row and row[0] is not None]
     except Exception:
         return []
 
 
-def _parse_multi_periods(cur, schema, raw):
+def _parse_multi_periods(cur, schema: str, raw: str) -> List[str]:
+    """Parse MULTI_PERIODS configuration values."""
     if not raw:
         return []
-    up = raw.upper().strip()
-    if up == "ALL":
-        return [_norm_period(p) for p in _fetch_periods_from_db(cur, schema, None) if _norm_period(p)]
-    if up.startswith("ALL_LAST:"):
+
+    upper_value = raw.upper().strip()
+    if upper_value == "ALL":
+        return [_norm_period(period) for period in _fetch_periods_from_db(cur, schema, None) if _norm_period(period)]
+
+    if upper_value.startswith("ALL_LAST:"):
         try:
-            n = int(up.split(":", 1)[1])
+            limit = int(upper_value.split(":", 1)[1])
         except Exception:
-            n = 6
-        return [_norm_period(p) for p in _fetch_periods_from_db(cur, schema, n) if _norm_period(p)]
-    out = []
-    for p in raw.split(","):
-        pp = _norm_period(p)
-        if pp:
-            out.append(pp)
-    return out
+            limit = 6
+        return [_norm_period(period) for period in _fetch_periods_from_db(cur, schema, limit) if _norm_period(period)]
+
+    output = []
+    for period in raw.split(","):
+        normalized_period = _norm_period(period)
+        if normalized_period:
+            output.append(normalized_period)
+    return output
 
 
-# ------------------------------------------------------------------------------------------
-# 5) Scope ISC por grupos
-# ------------------------------------------------------------------------------------------
-def _build_group_scope(cur, schema, g_alias="g"):
-    """
-    Prioridad de identificación de carrera/retícula del grupo:
-      1) exclusivo_carrera / exclusivo_reticula
-      2) carrera / reticula
-      3) materias_carreras (fallback final)
-    """
+# -----------------------------------------------------------------------------
+# Group-scope helper functions
+# -----------------------------------------------------------------------------
+
+def _build_group_scope(cur, schema: str, g_alias: str = "g") -> Dict[str, Any]:
+    """Build the SQL join and filter scope for the configured academic program."""
     if not has_table(cur, schema, "grupos"):
-        return {"ok": False, "reason": "No existe tabla `grupos`."}
+        return {"ok": False, "reason": "Table `grupos` does not exist."}
     if not has_table(cur, schema, "carreras"):
-        return {"ok": False, "reason": "No existe tabla `carreras`."}
+        return {"ok": False, "reason": "Table `carreras` does not exist."}
 
     g_cols = table_columns(cur, schema, "grupos")
     c_cols = table_columns(cur, schema, "carreras")
@@ -315,9 +382,8 @@ def _build_group_scope(cur, schema, g_alias="g"):
     c_ret = pick_column(c_cols, ["reticula", "id_reticula", "plan"])
 
     if not (c_name and c_level and c_key and c_ret):
-        return {"ok": False, "reason": "La tabla `carreras` no tiene columnas suficientes."}
+        return {"ok": False, "reason": "Table `carreras` does not expose enough columns."}
 
-    # Intento directo con grupo
     g_exc_carr = pick_column(g_cols, ["exclusivo_carrera"])
     g_exc_ret = pick_column(g_cols, ["exclusivo_reticula"])
     g_carr = pick_column(g_cols, ["carrera", "id_carrera", "clave_carrera"])
@@ -349,7 +415,7 @@ def _build_group_scope(cur, schema, g_alias="g"):
                 f"ON TRIM(CAST(c.`{c_key}` AS CHAR)) = {carr_expr} "
                 f"AND TRIM(CAST(c.`{c_ret}` AS CHAR)) = {ret_expr}"
             )
-            direct_strategy = "g->c (exclusivo_carrera/exclusivo_reticula -> carrera/reticula)"
+            direct_strategy = "g->c using exclusive/program fields"
 
     where = []
     params = []
@@ -378,7 +444,6 @@ def _build_group_scope(cur, schema, g_alias="g"):
             "source": "direct",
         }
 
-    # Fallback final por materias_carreras
     if has_table(cur, schema, "materias_carreras"):
         mc_cols = table_columns(cur, schema, "materias_carreras")
         g_materia = pick_column(g_cols, ["materia", "id_materia", "clave_materia"])
@@ -401,27 +466,29 @@ def _build_group_scope(cur, schema, g_alias="g"):
                 "joins": joins,
                 "where": where,
                 "params": params,
-                "strategy": "g->mc->c (fallback)",
+                "strategy": "g->mc->c fallback",
                 "c_name": c_name,
                 "c_level": c_level,
                 "source": "mc",
             }
 
-    return {
-        "ok": False,
-        "reason": "No fue posible construir el alcance ISC desde `grupos`.",
-    }
+    return {"ok": False, "reason": "Could not build the group scope from `grupos`."}
 
 
-def _group_period_filter(cur, schema, g_alias="g", target_period=None):
+def _group_period_filter(cur, schema: str, g_alias: str = "g", target_period: Optional[str] = None) -> Dict[str, Any]:
+    """Build a period filter for the groups table."""
     if not has_table(cur, schema, "grupos"):
-        return {"ok": False, "reason": "No existe tabla `grupos`."}
+        return {"ok": False, "reason": "Table `grupos` does not exist."}
+
     g_cols = table_columns(cur, schema, "grupos")
     g_period = pick_column(g_cols, ["periodo"])
+
     if not g_period:
-        return {"ok": False, "reason": "La tabla `grupos` no tiene columna `periodo`."}
+        return {"ok": False, "reason": "Table `grupos` does not expose a `periodo` column."}
+
     if not target_period:
         return {"ok": True, "where": [], "params": [], "g_period": g_period}
+
     return {
         "ok": True,
         "where": [f"{g_alias}.`{g_period}` = %s"],
@@ -430,14 +497,16 @@ def _group_period_filter(cur, schema, g_alias="g", target_period=None):
     }
 
 
-# ------------------------------------------------------------------------------------------
-# 6) Scope horarios enlazado a grupos ISC
-# ------------------------------------------------------------------------------------------
-def _build_horarios_scope(cur, schema, h_alias="h", g_alias="g", target_period=None):
+# -----------------------------------------------------------------------------
+# Timetable-scope helper functions linked to group records
+# -----------------------------------------------------------------------------
+
+def _build_horarios_scope(cur, schema: str, h_alias: str = "h", g_alias: str = "g", target_period: Optional[str] = None) -> Dict[str, Any]:
+    """Build the SQL join and filter scope for timetable records."""
     if not has_table(cur, schema, "horarios"):
-        return {"ok": False, "reason": "No existe tabla `horarios`."}
+        return {"ok": False, "reason": "Table `horarios` does not exist."}
     if not has_table(cur, schema, "grupos"):
-        return {"ok": False, "reason": "No existe tabla `grupos`."}
+        return {"ok": False, "reason": "Table `grupos` does not exist."}
 
     h_cols = table_columns(cur, schema, "horarios")
     g_cols = table_columns(cur, schema, "grupos")
@@ -460,7 +529,7 @@ def _build_horarios_scope(cur, schema, h_alias="h", g_alias="g", target_period=N
     if len(join_on) < 2:
         return {
             "ok": False,
-            "reason": "No fue posible enlazar `horarios` con `grupos` con suficiente precisión.",
+            "reason": "Could not link `horarios` with `grupos` with sufficient precision.",
         }
 
     g_scope = _build_group_scope(cur, schema, g_alias=g_alias)
@@ -478,7 +547,10 @@ def _build_horarios_scope(cur, schema, h_alias="h", g_alias="g", target_period=N
             where.append(f"{g_alias}.`{g_period}` = %s")
             params.append(target_period)
         else:
-            return {"ok": False, "reason": "Ni `horarios` ni `grupos` exponen `periodo`."}
+            return {
+                "ok": False,
+                "reason": "Neither `horarios` nor `grupos` exposes a `periodo` column.",
+            }
 
     joins = [
         f"JOIN {qual(schema, 'grupos')} {g_alias} ON " + " AND ".join(join_on),
@@ -494,98 +566,106 @@ def _build_horarios_scope(cur, schema, h_alias="h", g_alias="g", target_period=N
     }
 
 
-# ------------------------------------------------------------------------------------------
-# 7) MAIN
-# ------------------------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# Main execution
+# -----------------------------------------------------------------------------
+
 try:
     print(
-        f"Conectando a {DB_CFG['host']}:{DB_CFG['port']} "
-        f"BD={DB_CFG['database']} como {DB_CFG['user']} ..."
+        f"Connecting to {DB_CFG['host']}:{DB_CFG['port']} "
+        f"database={DB_CFG['database']} as user={DB_CFG['user']} ..."
     )
     cn = mysql.connector.connect(**DB_CFG)
     cur = cn.cursor()
-    schema = DB_CFG["database"]
+    schema = str(DB_CFG["database"])
 
-    print_title("Modo de ejecución")
-    print_line("Periodo objetivo (fijo)", TARGET_PERIOD)
-    print_line("Solo periodo objetivo", "Sí" if ONLY_TARGET_PERIOD else "No")
-    print_line("Carrera LIKE", MODEL_CARRERA_LIKE or "—")
-    print_line("Excluir carrera LIKE", EXCLUDE_CARRERA_LIKE or "—")
-    print_line("Nivel", MODEL_NIVEL or "—")
-    print_line("AT exactas", ", ".join(AT_LIST) if AT_LIST else "—")
-    print_line("AL reales exactas", ", ".join(AL_REAL_LIST) if AL_REAL_LIST else "—")
-    print_line("STRICT_ROOMSETS", "Sí" if STRICT_ROOMSETS else "No")
-    print_line("SEM1_EXTRAS", ", ".join(SEM1_EXTRAS) if SEM1_EXTRAS else "—")
-    print_line("Alias labs (A..I)", json.dumps(LAB_ALIAS_MAP, ensure_ascii=False) if LAB_ALIAS_MAP else "—")
+    print_title("Execution mode")
+    print_line("Target period", TARGET_PERIOD)
+    print_line("Only target period", "Yes" if ONLY_TARGET_PERIOD else "No")
+    print_line("Program LIKE filter", MODEL_CARRERA_LIKE or "-")
+    print_line("Excluded program LIKE filter", EXCLUDE_CARRERA_LIKE or "-")
+    print_line("Academic level", MODEL_NIVEL or "-")
+    print_line("Exact AT rooms", ", ".join(AT_LIST) if AT_LIST else "-")
+    print_line("Exact AL rooms", ", ".join(AL_REAL_LIST) if AL_REAL_LIST else "-")
+    print_line("STRICT_ROOMSETS", "Yes" if STRICT_ROOMSETS else "No")
+    print_line("SEM1_EXTRAS", ", ".join(SEM1_EXTRAS) if SEM1_EXTRAS else "-")
+    print_line("Laboratory aliases", json.dumps(LAB_ALIAS_MAP, ensure_ascii=False) if LAB_ALIAS_MAP else "-")
 
     g_scope = _build_group_scope(cur, schema, g_alias="g")
     g_period_scope = _group_period_filter(cur, schema, g_alias="g", target_period=TARGET_PERIOD)
     h_scope = _build_horarios_scope(cur, schema, h_alias="h", g_alias="g", target_period=TARGET_PERIOD)
 
-    print_title("Detección del alcance ISC")
-    print_line("Scope grupos", g_scope["strategy"] if g_scope.get("ok") else g_scope.get("reason"))
-    print_line("Scope horarios", h_scope["strategy"] if h_scope.get("ok") else h_scope.get("reason"))
+    print_title("Program-scope detection")
+    print_line("Group scope", g_scope["strategy"] if g_scope.get("ok") else g_scope.get("reason"))
+    print_line("Timetable scope", h_scope["strategy"] if h_scope.get("ok") else h_scope.get("reason"))
 
-    # --------------------------------------------------------------------------------------
-    # 7.1 Totales por tabla
-    # --------------------------------------------------------------------------------------
-    print_title("Métricas BD 'bdtec'")
+    # -------------------------------------------------------------------------
+    # 1. Global table totals
+    # -------------------------------------------------------------------------
+    print_title("Database metrics")
     metrics_sql = {
-        "Total_niveles":           f"SELECT COUNT(*) FROM {qual(schema, 'nivel_escolar')}" if has_table(cur, schema, "nivel_escolar") else None,
-        "Total_estatus":           f"SELECT COUNT(*) FROM {qual(schema, 'estatus_alumno')}" if has_table(cur, schema, "estatus_alumno") else None,
-        "Total_planes":            f"SELECT COUNT(*) FROM {qual(schema, 'planes_de_estudio')}" if has_table(cur, schema, "planes_de_estudio") else None,
-        "Total_carreras":          f"SELECT COUNT(*) FROM {qual(schema, 'carreras')}" if has_table(cur, schema, "carreras") else None,
-        "Total_materias":          f"SELECT COUNT(*) FROM {qual(schema, 'materias')}" if has_table(cur, schema, "materias") else None,
-        "Total_alumnos":           f"SELECT COUNT(*) FROM {qual(schema, 'alumnos')}" if has_table(cur, schema, "alumnos") else None,
-        "Total_grupos (GLOBAL)":   f"SELECT COUNT(*) FROM {qual(schema, 'grupos')}" if has_table(cur, schema, "grupos") else None,
-        "Total_horarios (GLOBAL)": f"SELECT COUNT(*) FROM {qual(schema, 'horarios')}" if has_table(cur, schema, "horarios") else None,
-        "Total_aulas":             f"SELECT COUNT(*) FROM {qual(schema, 'aulas')}" if has_table(cur, schema, "aulas") else None,
+        "Total academic levels": f"SELECT COUNT(*) FROM {qual(schema, 'nivel_escolar')}" if has_table(cur, schema, "nivel_escolar") else None,
+        "Total student statuses": f"SELECT COUNT(*) FROM {qual(schema, 'estatus_alumno')}" if has_table(cur, schema, "estatus_alumno") else None,
+        "Total study plans": f"SELECT COUNT(*) FROM {qual(schema, 'planes_de_estudio')}" if has_table(cur, schema, "planes_de_estudio") else None,
+        "Total programs": f"SELECT COUNT(*) FROM {qual(schema, 'carreras')}" if has_table(cur, schema, "carreras") else None,
+        "Total courses": f"SELECT COUNT(*) FROM {qual(schema, 'materias')}" if has_table(cur, schema, "materias") else None,
+        "Total students": f"SELECT COUNT(*) FROM {qual(schema, 'alumnos')}" if has_table(cur, schema, "alumnos") else None,
+        "Total groups (global)": f"SELECT COUNT(*) FROM {qual(schema, 'grupos')}" if has_table(cur, schema, "grupos") else None,
+        "Total timetables (global)": f"SELECT COUNT(*) FROM {qual(schema, 'horarios')}" if has_table(cur, schema, "horarios") else None,
+        "Total rooms": f"SELECT COUNT(*) FROM {qual(schema, 'aulas')}" if has_table(cur, schema, "aulas") else None,
     }
 
     metrics_out = []
-    for k, q in metrics_sql.items():
-        if not q:
-            print_line(k, "N/D (tabla ausente)")
-            metrics_out.append((k, "N/D"))
+    for metric_name, query in metrics_sql.items():
+        if not query:
+            print_line(metric_name, "N/A (missing table)")
+            metrics_out.append((metric_name, "N/A"))
             continue
         try:
-            val = run_scalar(cur, q)
-            print_line(k, val)
-            metrics_out.append((k, val))
-        except mysql.connector.Error as e:
-            msg = getattr(e, "msg", str(e))
-            print_line(k, f"ERROR ({msg})")
-            metrics_out.append((k, f"ERROR: {msg}"))
+            value = run_scalar(cur, query)
+            print_line(metric_name, value)
+            metrics_out.append((metric_name, value))
+        except mysql.connector.Error as exc:
+            message = getattr(exc, "msg", str(exc))
+            print_line(metric_name, f"ERROR ({message})")
+            metrics_out.append((metric_name, f"ERROR: {message}"))
 
-    # Totales periodo objetivo
     try:
         if has_table(cur, schema, "grupos") and g_period_scope["ok"]:
             g_cols = table_columns(cur, schema, "grupos")
             gp = pick_column(g_cols, ["periodo"])
-            n = run_scalar(cur, f"SELECT COUNT(*) FROM {qual(schema, 'grupos')} WHERE `{gp}`=%s", (TARGET_PERIOD,))
-            print_line("Total_grupos (PERIODO OBJ)", n)
-            metrics_out.append(("Total_grupos (PERIODO OBJ)", n))
+            total = run_scalar(
+                cur,
+                f"SELECT COUNT(*) FROM {qual(schema, 'grupos')} WHERE `{gp}`=%s",
+                (TARGET_PERIOD,),
+            )
+            print_line("Total groups (target period)", total)
+            metrics_out.append(("Total groups (target period)", total))
         else:
-            print_line("Total_grupos (PERIODO OBJ)", "N/D")
-            metrics_out.append(("Total_grupos (PERIODO OBJ)", "N/D"))
+            print_line("Total groups (target period)", "N/A")
+            metrics_out.append(("Total groups (target period)", "N/A"))
 
         if has_table(cur, schema, "horarios"):
             h_cols = table_columns(cur, schema, "horarios")
             hp = pick_column(h_cols, ["periodo"])
             if hp:
-                n = run_scalar(cur, f"SELECT COUNT(*) FROM {qual(schema, 'horarios')} WHERE `{hp}`=%s", (TARGET_PERIOD,))
-                print_line("Total_horarios (PERIODO OBJ)", n)
-                metrics_out.append(("Total_horarios (PERIODO OBJ)", n))
+                total = run_scalar(
+                    cur,
+                    f"SELECT COUNT(*) FROM {qual(schema, 'horarios')} WHERE `{hp}`=%s",
+                    (TARGET_PERIOD,),
+                )
+                print_line("Total timetables (target period)", total)
+                metrics_out.append(("Total timetables (target period)", total))
             else:
-                print_line("Total_horarios (PERIODO OBJ)", "N/D")
-                metrics_out.append(("Total_horarios (PERIODO OBJ)", "N/D"))
-    except mysql.connector.Error as e:
-        print_line("Totales periodo obj", f"ERROR ({getattr(e, 'msg', str(e))})")
+                print_line("Total timetables (target period)", "N/A")
+                metrics_out.append(("Total timetables (target period)", "N/A"))
+    except mysql.connector.Error as exc:
+        print_line("Target-period totals", f"ERROR ({getattr(exc, 'msg', str(exc))})")
 
-    # --------------------------------------------------------------------------------------
-    # 7.2 Totales ISC
-    # --------------------------------------------------------------------------------------
-    print_title("Totales ISC (periodo objetivo)")
+    # -------------------------------------------------------------------------
+    # 2. Target program totals
+    # -------------------------------------------------------------------------
+    print_title("Target-program totals")
     try:
         if g_scope["ok"] and g_period_scope["ok"]:
             g_cols = table_columns(cur, schema, "grupos")
@@ -603,15 +683,15 @@ try:
                     {g_scope['joins']}
                     {_where_clause(where)}
                 """
-                total_isc_grupos = run_scalar(cur, sql, params)
-                print_line("Grupos ISC", total_isc_grupos)
-                metrics_out.append(("Grupos ISC", total_isc_grupos))
+                total_groups = run_scalar(cur, sql, params)
+                print_line("Target-program groups", total_groups)
+                metrics_out.append(("Target-program groups", total_groups))
             else:
-                print_line("Grupos ISC", "N/D (faltan columnas clave)")
-                metrics_out.append(("Grupos ISC", "N/D"))
+                print_line("Target-program groups", "N/A (missing key columns)")
+                metrics_out.append(("Target-program groups", "N/A"))
         else:
-            print_line("Grupos ISC", g_scope.get("reason", "N/D"))
-            metrics_out.append(("Grupos ISC", g_scope.get("reason", "N/D")))
+            print_line("Target-program groups", g_scope.get("reason", "N/A"))
+            metrics_out.append(("Target-program groups", g_scope.get("reason", "N/A")))
 
         if h_scope["ok"]:
             sql = f"""
@@ -620,26 +700,26 @@ try:
                 {h_scope['joins']}
                 {_where_clause(h_scope['where'])}
             """
-            total_isc_horarios = run_scalar(cur, sql, h_scope["params"])
-            print_line("Horarios ISC", total_isc_horarios)
-            metrics_out.append(("Horarios ISC", total_isc_horarios))
+            total_timetables = run_scalar(cur, sql, h_scope["params"])
+            print_line("Target-program timetable rows", total_timetables)
+            metrics_out.append(("Target-program timetable rows", total_timetables))
         else:
-            print_line("Horarios ISC", h_scope.get("reason", "N/D"))
-            metrics_out.append(("Horarios ISC", h_scope.get("reason", "N/D")))
-    except mysql.connector.Error as e:
-        print_line("Totales ISC", f"ERROR ({getattr(e, 'msg', str(e))})")
+            print_line("Target-program timetable rows", h_scope.get("reason", "N/A"))
+            metrics_out.append(("Target-program timetable rows", h_scope.get("reason", "N/A")))
+    except mysql.connector.Error as exc:
+        print_line("Target-program totals", f"ERROR ({getattr(exc, 'msg', str(exc))})")
 
     if EXPORT_CSV:
         _export_csv(
-            os.path.join(EXPORT_DIR, f"metricas_totales_{TARGET_PERIOD}.csv"),
-            ["metrica", "valor"],
+            os.path.join(EXPORT_DIR, f"metrics_totals_{TARGET_PERIOD}.csv"),
+            ["metric", "value"],
             metrics_out,
         )
 
-    # --------------------------------------------------------------------------------------
-    # 7.3 Carreras detectadas en alcance ISC
-    # --------------------------------------------------------------------------------------
-    print_title("Carreras detectadas en el alcance ISC")
+    # -------------------------------------------------------------------------
+    # 3. Detected programs within scope
+    # -------------------------------------------------------------------------
+    print_title("Programs detected within the target scope")
     try:
         if g_scope["ok"] and g_period_scope["ok"]:
             c_name = g_scope.get("c_name")
@@ -647,30 +727,30 @@ try:
                 where = list(g_scope["where"]) + list(g_period_scope["where"])
                 params = list(g_scope["params"]) + list(g_period_scope["params"])
                 sql = f"""
-                    SELECT UPPER(TRIM(c.`{c_name}`)) AS carrera_nom, COUNT(*) AS total
+                    SELECT UPPER(TRIM(c.`{c_name}`)) AS program_name, COUNT(*) AS total
                     FROM {qual(schema, 'grupos')} g
                     {g_scope['joins']}
                     {_where_clause(where)}
                     GROUP BY UPPER(TRIM(c.`{c_name}`))
-                    ORDER BY total DESC, carrera_nom
+                    ORDER BY total DESC, program_name
                 """
                 rows = fetchall(cur, sql, params)
                 if rows:
-                    for nom, total in rows:
-                        print(f"{nom:<60}: {total}")
+                    for name, total in rows:
+                        print(f"{str(name):<60}: {total}")
                 else:
-                    print("(sin datos para el alcance ISC)")
+                    print("(no data for the configured scope)")
             else:
-                print("(no existe columna de nombre de carrera reconocible)")
+                print("(no recognized program-name column)")
         else:
-            print(g_scope.get("reason", "(sin alcance ISC)"))
-    except mysql.connector.Error as e:
-        print(f"ERROR al listar carreras ISC: {getattr(e, 'msg', str(e))}")
+            print(g_scope.get("reason", "(no target scope)"))
+    except mysql.connector.Error as exc:
+        print(f"ERROR while listing detected programs: {getattr(exc, 'msg', str(exc))}")
 
-    # --------------------------------------------------------------------------------------
-    # 7.4 Distribución de grupos ISC por periodo
-    # --------------------------------------------------------------------------------------
-    print_title("Distribución de grupos ISC por periodo")
+    # -------------------------------------------------------------------------
+    # 4. Group distribution by period
+    # -------------------------------------------------------------------------
+    print_title("Target-program group distribution by period")
     try:
         if g_scope["ok"] and has_table(cur, schema, "grupos"):
             g_cols = table_columns(cur, schema, "grupos")
@@ -694,7 +774,7 @@ try:
                         params.extend(selected)
 
                 sql = f"""
-                    SELECT g.`{gp}` AS periodo, COUNT(DISTINCT {distinct_key}) AS total
+                    SELECT g.`{gp}` AS period, COUNT(DISTINCT {distinct_key}) AS total
                     FROM {qual(schema, 'grupos')} g
                     {g_scope['joins']}
                     {_where_clause(where)}
@@ -703,21 +783,21 @@ try:
                 """
                 rows = fetchall(cur, sql, params)
                 if rows:
-                    for per, total in rows:
-                        print(f"{per}\t{total}")
+                    for period, total in rows:
+                        print(f"{period}\t{total}")
                 else:
-                    print("(sin datos)")
+                    print("(no data)")
             else:
-                print("(faltan columnas clave de grupos para esta métrica)")
+                print("(missing required group columns for this metric)")
         else:
-            print(g_scope.get("reason", "(sin alcance ISC)"))
-    except mysql.connector.Error as e:
-        print(f"ERROR al listar distribución ISC por periodo: {getattr(e, 'msg', str(e))}")
+            print(g_scope.get("reason", "(no target scope)"))
+    except mysql.connector.Error as exc:
+        print(f"ERROR while listing group distribution by period: {getattr(exc, 'msg', str(exc))}")
 
-    # --------------------------------------------------------------------------------------
-    # 7.5 Muestra de carreras filtradas por ISC
-    # --------------------------------------------------------------------------------------
-    print_title("Muestra: carreras filtradas por ISC")
+    # -------------------------------------------------------------------------
+    # 5. Sample of filtered programs
+    # -------------------------------------------------------------------------
+    print_title("Sample of filtered programs")
     try:
         if g_scope["ok"] and g_period_scope["ok"]:
             c_name = g_scope.get("c_name")
@@ -725,40 +805,40 @@ try:
             if c_name:
                 where = list(g_scope["where"]) + list(g_period_scope["where"])
                 params = list(g_scope["params"]) + list(g_period_scope["params"])
-                extra_level = f", UPPER(TRIM(c.`{c_level}`)) AS nivel" if c_level else ""
+                extra_level = f", UPPER(TRIM(c.`{c_level}`)) AS level" if c_level else ""
                 sql = f"""
                     SELECT DISTINCT
-                        UPPER(TRIM(c.`{c_name}`)) AS carrera_nom
+                        UPPER(TRIM(c.`{c_name}`)) AS program_name
                         {extra_level}
                     FROM {qual(schema, 'grupos')} g
                     {g_scope['joins']}
                     {_where_clause(where)}
-                    ORDER BY carrera_nom
+                    ORDER BY program_name
                     LIMIT 50
                 """
                 rows = fetchall(cur, sql, params)
                 if rows:
                     if c_level:
-                        print(f"{'nivel':<6} carrera")
+                        print(f"{'level':<6} program")
                         print("-" * 90)
-                        for nom, niv in rows:
-                            print(f"{str(niv):<6} {str(nom)}")
+                        for name, level in rows:
+                            print(f"{str(level):<6} {str(name)}")
                     else:
-                        for (nom,) in rows:
-                            print(nom)
+                        for (name,) in rows:
+                            print(name)
                 else:
-                    print("(sin datos)")
+                    print("(no data)")
             else:
-                print("(sin columna de nombre de carrera)")
+                print("(no program-name column)")
         else:
-            print(g_scope.get("reason", "(sin alcance ISC)"))
-    except mysql.connector.Error as e:
-        print(f"ERROR al listar muestra de carreras: {getattr(e, 'msg', str(e))}")
+            print(g_scope.get("reason", "(no target scope)"))
+    except mysql.connector.Error as exc:
+        print(f"ERROR while listing the program sample: {getattr(exc, 'msg', str(exc))}")
 
-    # --------------------------------------------------------------------------------------
-    # 7.6 Muestra de grupos ISC del periodo objetivo
-    # --------------------------------------------------------------------------------------
-    print_title("Muestra: 20 grupos ISC del periodo objetivo")
+    # -------------------------------------------------------------------------
+    # 6. Sample of target-period groups
+    # -------------------------------------------------------------------------
+    print_title("Sample of 20 target-program groups in the target period")
     try:
         if g_scope["ok"] and g_period_scope["ok"]:
             g_cols = table_columns(cur, schema, "grupos")
@@ -776,24 +856,24 @@ try:
             select_cols = []
             headers = []
 
-            def add_col(col, alias_name):
+            def add_col(col: Optional[str], alias_name: str) -> None:
                 if col:
                     select_cols.append(f"g.`{col}`")
                     headers.append(alias_name)
 
-            add_col(gp, "periodo")
-            add_col(gm, "materia")
-            add_col(gg, "grupo")
-            add_col(gi, "inscritos")
-            add_col(gc, "capacidad")
-            add_col(gr, "rfc")
-            add_col(gexc, "exclusivo_carrera")
-            add_col(gexr, "exclusivo_reticula")
-            add_col(gcar, "carrera")
-            add_col(gret, "reticula")
+            add_col(gp, "period")
+            add_col(gm, "course")
+            add_col(gg, "group")
+            add_col(gi, "enrolled")
+            add_col(gc, "capacity")
+            add_col(gr, "teacher")
+            add_col(gexc, "exclusive_program")
+            add_col(gexr, "exclusive_plan")
+            add_col(gcar, "program")
+            add_col(gret, "plan")
 
             if not select_cols:
-                print("(no hay columnas suficientes para la muestra)")
+                print("(not enough columns for the sample)")
             else:
                 where = list(g_scope["where"]) + list(g_period_scope["where"])
                 params = list(g_scope["params"]) + list(g_period_scope["params"])
@@ -815,30 +895,30 @@ try:
                 """
                 rows = fetchall(cur, sql, params)
                 if rows:
-                    print("Periodo objetivo =", TARGET_PERIOD)
+                    print("Target period =", TARGET_PERIOD)
                     print("\t".join(headers))
-                    for r in rows:
-                        print("\t".join("" if x is None else str(x) for x in r))
+                    for row in rows:
+                        print("\t".join("" if item is None else str(item) for item in row))
                 else:
-                    print("(sin grupos ISC en el periodo objetivo)")
+                    print("(no target-program groups in the target period)")
         else:
-            print(g_scope.get("reason", "(sin alcance ISC)"))
-    except mysql.connector.Error as e:
-        print(f"ERROR al listar grupos ISC del periodo objetivo: {getattr(e, 'msg', str(e))}")
+            print(g_scope.get("reason", "(no target scope)"))
+    except mysql.connector.Error as exc:
+        print(f"ERROR while listing target-period groups: {getattr(exc, 'msg', str(exc))}")
 
-    # --------------------------------------------------------------------------------------
-    # 7.7 Aulas ISC + validaciones exactas
-    # --------------------------------------------------------------------------------------
-    print_title("Aulas ISC – catálogo y validaciones (AT/AL exactas)")
+    # -------------------------------------------------------------------------
+    # 7. Room catalog and exact AT/AL validation
+    # -------------------------------------------------------------------------
+    print_title("Room catalog and exact AT/AL validation")
     try:
-        print_line("AT exactas", ", ".join(AT_LIST) if AT_LIST else "—")
-        print_line("AL reales exactas", ", ".join(AL_REAL_LIST) if AL_REAL_LIST else "—")
-        print_line("Periodo objetivo", TARGET_PERIOD)
+        print_line("Exact AT rooms", ", ".join(AT_LIST) if AT_LIST else "-")
+        print_line("Exact AL rooms", ", ".join(AL_REAL_LIST) if AL_REAL_LIST else "-")
+        print_line("Target period", TARGET_PERIOD)
 
-        A_catalog = []
-        cap_map = {}
-        tipo_map = {}
-        edif_map = {}
+        room_catalog = []
+        capacity_map: Dict[str, Optional[int]] = {}
+        type_map: Dict[str, str] = {}
+        building_map: Dict[str, str] = {}
 
         if has_table(cur, schema, "aulas"):
             aq = qual(schema, "aulas")
@@ -859,130 +939,125 @@ try:
 
                 rows = fetchall(cur, f"SELECT {', '.join(select_cols)} FROM {aq}")
 
-                for r in rows:
-                    idx = 0
-                    room = _norm_room(r[idx]); idx += 1
+                for row in rows:
+                    index = 0
+                    room = _norm_room(row[index])
+                    index += 1
                     if not room:
                         continue
-                    A_catalog.append(room)
+                    room_catalog.append(room)
 
                     if col_cap:
                         try:
-                            cap_map[room] = int(r[idx]) if r[idx] is not None else None
+                            capacity_map[room] = int(row[index]) if row[index] is not None else None
                         except Exception:
-                            cap_map[room] = None
-                        idx += 1
+                            capacity_map[room] = None
+                        index += 1
                     else:
-                        cap_map[room] = None
+                        capacity_map[room] = None
 
                     if col_tipo:
-                        tipo_map[room] = str(r[idx]).strip().upper() if r[idx] is not None else ""
-                        idx += 1
+                        type_map[room] = str(row[index]).strip().upper() if row[index] is not None else ""
+                        index += 1
                     else:
-                        tipo_map[room] = ""
+                        type_map[room] = ""
 
                     if col_edif:
-                        edif_map[room] = str(r[idx]).strip() if r[idx] is not None else ""
+                        building_map[room] = str(row[index]).strip() if row[index] is not None else ""
                     else:
-                        edif_map[room] = ""
-
+                        building_map[room] = ""
             else:
-                print("(tabla `aulas` sin columna de clave reconocible)")
+                print("(table `aulas` does not expose a recognized room-code column)")
         else:
-            print("(no existe tabla `aulas`)")
+            print("(table `aulas` does not exist)")
 
-        A_set = set(A_catalog)
-        AT_set = set(AT_LIST)
-        AL_set = set(AL_REAL_LIST)
+        room_set = set(room_catalog)
+        at_set = set(AT_LIST)
+        al_set = set(AL_REAL_LIST)
 
-        in_AT = _catalog_rooms_in_at(A_set, AT_set)
-        in_AL = _catalog_rooms_in_al(A_set, AL_set)
-        outside = _catalog_rooms_outside(A_set, AT_set, AL_set)
+        in_at = _catalog_rooms_in_at(room_set, at_set)
+        in_al = _catalog_rooms_in_al(room_set, al_set)
+        outside = _catalog_rooms_outside(room_set, at_set, al_set)
 
-        print_line("|A| catálogo BD", len(A_set))
-        print_line("|AT| definidas", len(AT_set))
-        print_line("|AL| definidas", len(AL_set))
-        print_line("Aulas BD ∩ AT", len(in_AT))
-        print_line("Aulas BD ∩ AL", len(in_AL))
-        print_line("Aulas BD fuera de AT/AL", len(outside))
+        print_line("|A| database catalog", len(room_set))
+        print_line("|AT| configured", len(at_set))
+        print_line("|AL| configured", len(al_set))
+        print_line("Database rooms in AT", len(in_at))
+        print_line("Database rooms in AL", len(in_al))
+        print_line("Database rooms outside AT/AL", len(outside))
 
-        at_not_in_A = sorted(list(AT_set - A_set))
-        al_not_in_A = sorted(list(AL_set - A_set))
-        if at_not_in_A:
-            print_line("AT fuera de BD (ej.)", ", ".join(at_not_in_A[:10]))
-        if al_not_in_A:
-            print_line("AL fuera de BD (ej.)", ", ".join(al_not_in_A[:10]))
+        at_not_in_catalog = sorted(list(at_set - room_set))
+        al_not_in_catalog = sorted(list(al_set - room_set))
+        if at_not_in_catalog:
+            print_line("AT outside database catalog", ", ".join(at_not_in_catalog[:10]))
+        if al_not_in_catalog:
+            print_line("AL outside database catalog", ", ".join(al_not_in_catalog[:10]))
         if outside[:10]:
-            print_line("Ejemplos fuera de AT/AL", ", ".join(outside[:10]))
+            print_line("Examples outside AT/AL", ", ".join(outside[:10]))
 
-        # Validar contra tipo_aula del catálogo
-        at_wrong_tipo = sorted([r for r in in_AT if tipo_map.get(r, "") and tipo_map.get(r, "") != "A"])
-        al_wrong_tipo = sorted([r for r in in_AL if tipo_map.get(r, "") and tipo_map.get(r, "") != "L"])
+        at_wrong_type = sorted([room for room in in_at if type_map.get(room, "") and type_map.get(room, "") != "A"])
+        al_wrong_type = sorted([room for room in in_al if type_map.get(room, "") and type_map.get(room, "") != "L"])
 
-        print_line("AT con tipo != 'A'", len(at_wrong_tipo))
-        if at_wrong_tipo[:10]:
-            print_line("Ejemplos AT tipo raro", ", ".join(at_wrong_tipo[:10]))
+        print_line("AT rooms with type != 'A'", len(at_wrong_type))
+        if at_wrong_type[:10]:
+            print_line("Examples of unexpected AT type", ", ".join(at_wrong_type[:10]))
 
-        print_line("AL con tipo != 'L'", len(al_wrong_tipo))
-        if al_wrong_tipo[:10]:
-            print_line("Ejemplos AL tipo raro", ", ".join(al_wrong_tipo[:10]))
+        print_line("AL rooms with type != 'L'", len(al_wrong_type))
+        if al_wrong_type[:10]:
+            print_line("Examples of unexpected AL type", ", ".join(al_wrong_type[:10]))
 
-        # Alias de laboratorios
         if REAL_TO_ALIAS:
-            print_title("Alias de laboratorios (visual)")
-            for real in sorted(AL_set):
-                print_line(real, REAL_TO_ALIAS.get(real, "—"))
+            print_title("Laboratory aliases")
+            for real_room in sorted(al_set):
+                print_line(real_room, REAL_TO_ALIAS.get(real_room, "-"))
 
-        # Top capacidad
-        known_caps = [(k, v) for k, v in cap_map.items() if isinstance(v, int)]
-        if known_caps:
-            top_caps = sorted(known_caps, key=lambda t: (t[1], t[0]), reverse=True)[:10]
-            print("\nTop 10 aulas por capacidad conocida:")
-            for a, c in top_caps:
-                print(f"  {a:>6s}: {c}")
+        known_capacities = [(room, cap) for room, cap in capacity_map.items() if isinstance(cap, int)]
+        if known_capacities:
+            top_capacities = sorted(known_capacities, key=lambda item: (item[1], item[0]), reverse=True)[:10]
+            print("\nTop 10 rooms by known capacity:")
+            for room, capacity in top_capacities:
+                print(f"  {room:>6s}: {capacity}")
         else:
-            print("(sin columna de capacidad en `aulas` o no disponible)")
+            print("(no capacity column in `aulas`, or capacity values are unavailable)")
 
-        # Resumen por tipo_aula
-        if tipo_map:
-            print_title("Resumen de catálogo por tipo_aula")
-            tipos = {}
-            for _room, tipo in tipo_map.items():
-                clave = tipo if tipo else "SIN_TIPO"
-                tipos[clave] = tipos.get(clave, 0) + 1
-            for tipo, total in sorted(tipos.items(), key=lambda x: x[0]):
-                print_line(f"tipo_aula={tipo}", total)
+        if type_map:
+            print_title("Catalog summary by tipo_aula")
+            type_counts: Dict[str, int] = {}
+            for _room, room_type in type_map.items():
+                type_key = room_type if room_type else "NO_TYPE"
+                type_counts[type_key] = type_counts.get(type_key, 0) + 1
+            for room_type, total in sorted(type_counts.items(), key=lambda item: item[0]):
+                print_line(f"tipo_aula={room_type}", total)
 
-        # NUEVO: advertencia y candidatos de laboratorios si AL está vacía
-        if not AL_set:
-            print_title("Advertencia: laboratorios ISC no configurados")
-            print("No hay aulas de laboratorio reales definidas en MODEL_AL_LIST_REAL / AL_HARD.")
-            print("Por eso, el dashboard reporta |AL|=0 y no puede validar laboratorios de ISC todavía.")
+        if not al_set:
+            print_title("Warning: laboratory rooms are not configured")
+            print("No real laboratory rooms were defined in MODEL_AL_LIST_REAL or MODEL_AL_LIST.")
+            print("Therefore, laboratory validation cannot be completed yet.")
 
-            lab_candidates = sorted([r for r in A_set if tipo_map.get(r, "") == "L"])
-            print_line("Laboratorios candidatos en catálogo", len(lab_candidates))
+            lab_candidates = sorted([room for room in room_set if type_map.get(room, "") == "L"])
+            print_line("Laboratory candidates in catalog", len(lab_candidates))
             if lab_candidates:
-                print("Candidatos (tipo_aula='L'):")
+                print("Candidates with tipo_aula='L':")
                 for room in lab_candidates:
                     alias = REAL_TO_ALIAS.get(room, "")
                     extra = f" -> alias {alias}" if alias else ""
-                    cap = cap_map.get(room)
-                    cap_txt = f", cap={cap}" if isinstance(cap, int) else ""
-                    edif = edif_map.get(room, "")
-                    edif_txt = f", edificio={edif}" if edif else ""
-                    print(f"  {room}{extra}{edif_txt}{cap_txt}")
+                    capacity = capacity_map.get(room)
+                    capacity_text = f", cap={capacity}" if isinstance(capacity, int) else ""
+                    building = building_map.get(room, "")
+                    building_text = f", building={building}" if building else ""
+                    print(f"  {room}{extra}{building_text}{capacity_text}")
 
-        # ----------------------------------------------------------------------------------
-        # Uso real en horarios, restringido a ISC cuando sea posible
-        # ----------------------------------------------------------------------------------
-        print_title("Validación uso real en HORARIOS (AT/AL exactas, alcance ISC)")
+        # ---------------------------------------------------------------------
+        # Real timetable usage, restricted to the configured scope when possible
+        # ---------------------------------------------------------------------
+        print_title("Real timetable usage validation with exact AT/AL sets")
         if has_table(cur, schema, "horarios"):
             hq = qual(schema, "horarios")
             h_cols = table_columns(cur, schema, "horarios")
             col_aula_h = pick_column(h_cols, ["aula", "salon", "aula_id", "clave_aula"])
 
             if not col_aula_h:
-                print("(no fue posible verificar: `horarios` sin columna de aula reconocible)")
+                print("(cannot verify: `horarios` does not expose a recognized room column)")
             else:
                 if h_scope["ok"]:
                     sql = f"""
@@ -992,19 +1067,19 @@ try:
                         {_where_clause(h_scope['where'])}
                     """
                     used = fetchall(cur, sql, h_scope["params"])
-                    used_set = {_norm_room(u[0]) for u in used if u and u[0]}
-                    used_outside = sorted([a for a in used_set if a and not _room_allowed(a, AT_set, AL_set)])
+                    used_set = {_norm_room(row[0]) for row in used if row and row[0]}
+                    used_outside = sorted([room for room in used_set if room and not _room_allowed(room, at_set, al_set)])
 
-                    print_line("Aulas usadas ISC", len(used_set))
-                    print_line("Aulas fuera de whitelist", len(used_outside))
+                    print_line("Rooms used in target scope", len(used_set))
+                    print_line("Rooms outside whitelist", len(used_outside))
                     if used_outside[:10]:
-                        print_line("Ejemplos (fuera)", ", ".join(used_outside[:10]))
+                        print_line("Examples outside", ", ".join(used_outside[:10]))
 
                     if EXPORT_CSV and used_outside:
                         _export_csv(
-                            os.path.join(EXPORT_DIR, f"aulas_fuera_whitelist_isc_{TARGET_PERIOD}.csv"),
-                            ["aula"],
-                            [(a,) for a in used_outside],
+                            os.path.join(EXPORT_DIR, f"rooms_outside_whitelist_scope_{TARGET_PERIOD}.csv"),
+                            ["room"],
+                            [(room,) for room in used_outside],
                         )
                 else:
                     col_periodo_h = pick_column(h_cols, ["periodo"])
@@ -1018,41 +1093,41 @@ try:
                             """,
                             (TARGET_PERIOD,),
                         )
-                        used_set = {_norm_room(u[0]) for u in used if u and u[0]}
-                        used_outside = sorted([a for a in used_set if a and not _room_allowed(a, AT_set, AL_set)])
+                        used_set = {_norm_room(row[0]) for row in used if row and row[0]}
+                        used_outside = sorted([room for room in used_set if room and not _room_allowed(room, at_set, al_set)])
 
-                        print_line("Aviso", "No se pudo restringir a ISC; se muestra validación global del periodo.")
-                        print_line("Aulas usadas (global periodo)", len(used_set))
-                        print_line("Aulas fuera de whitelist", len(used_outside))
+                        print_line("Notice", "Could not restrict to the target scope; using global period data.")
+                        print_line("Rooms used in global period", len(used_set))
+                        print_line("Rooms outside whitelist", len(used_outside))
                         if used_outside[:10]:
-                            print_line("Ejemplos (fuera)", ", ".join(used_outside[:10]))
+                            print_line("Examples outside", ", ".join(used_outside[:10]))
 
                         if EXPORT_CSV and used_outside:
                             _export_csv(
-                                os.path.join(EXPORT_DIR, f"aulas_fuera_whitelist_global_{TARGET_PERIOD}.csv"),
-                                ["aula"],
-                                [(a,) for a in used_outside],
+                                os.path.join(EXPORT_DIR, f"rooms_outside_whitelist_global_{TARGET_PERIOD}.csv"),
+                                ["room"],
+                                [(room,) for room in used_outside],
                             )
                     else:
-                        print("(no fue posible verificar: `horarios` sin columna de periodo reconocible)")
+                        print("(cannot verify: `horarios` does not expose a period column)")
         else:
-            print("(no existe tabla `horarios`)")
+            print("(table `horarios` does not exist)")
 
-    except mysql.connector.Error as e:
-        print(f"ERROR en métricas de aulas: {getattr(e, 'msg', str(e))}")
-    except Exception as e:
-        print(f"ERROR general en métricas de aulas: {e}")
+    except mysql.connector.Error as exc:
+        print(f"ERROR in room metrics: {getattr(exc, 'msg', str(exc))}")
+    except Exception as exc:
+        print(f"General error in room metrics: {exc}")
 
-    # --------------------------------------------------------------------------------------
-    # 7.8 Multi-periodo (informativo)
-    # --------------------------------------------------------------------------------------
+    # -------------------------------------------------------------------------
+    # 8. Multi-period information
+    # -------------------------------------------------------------------------
     if MULTI_PERIODS_RAW:
-        print_title("MULTI_PERIODS (informativo)")
+        print_title("MULTI_PERIODS information")
         periods = _parse_multi_periods(cur, schema, MULTI_PERIODS_RAW)
         if periods:
-            print_line("Periodos seleccionados", ", ".join(periods))
+            print_line("Selected periods", ", ".join(periods))
         else:
-            print("(MULTI_PERIODS no arrojó periodos válidos)")
+            print("(MULTI_PERIODS did not return valid periods)")
 
     try:
         cur.close()
@@ -1060,13 +1135,14 @@ try:
     except Exception:
         pass
 
-    print("\nMétricas completadas.")
+    print("\nMetrics completed.")
 
-# ------------------------------------------------------------------------------------------
-# 8) Manejo de errores de alto nivel
-# ------------------------------------------------------------------------------------------
-except mysql.connector.Error as e:
-    print(f"Error de MySQL: {getattr(e, 'msg', str(e))}")
-except Exception as e:
-    print(f"Error general: {e}")
+# -----------------------------------------------------------------------------
+# High-level error handling
+# -----------------------------------------------------------------------------
+
+except mysql.connector.Error as exc:
+    print(f"MySQL error: {getattr(exc, 'msg', str(exc))}")
+except Exception as exc:
+    print(f"General error: {exc}")
 
