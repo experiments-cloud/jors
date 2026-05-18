@@ -1,15 +1,29 @@
-﻿# build_datos_modelo_isc.py
-# ==========================================================================================
-# Constructor de datos para el modelo ISC
-# ------------------------------------------------------------------------------------------
-# Este script:
-#   1. Lee la configuración desde .env.
-#   2. Extrae información de la base de datos bdtec.
-#   3. Filtra el alcance a Ingeniería en Sistemas Computacionales, nivel Licenciatura,
-#      excluyendo explícitamente la modalidad no escolarizada.
-#   4. Construye los conjuntos y parámetros requeridos por el modelo.
-#   5. Emite un archivo JSON listo para el solver.
-# ==========================================================================================
+﻿"""
+Instance Generator
+==================
+
+Utility script for generating model-ready JSON instances for the Academic
+Timetabling MILP repository.
+
+This module extracts and transforms institutional data into anonymized JSON
+structures required by the MILP solver. The generated JSON files contain sets,
+parameters, room information, course-group pairs, teaching requirements, and
+compatibility data used by the optimization model.
+
+Main responsibilities
+---------------------
+- Read institutional input data from the configured local environment.
+- Build the sets and parameters required by the MILP formulation.
+- Configure classroom and laboratory sets.
+- Compute room capacities and room-type compatibility.
+- Export model-ready JSON instances for reproducible experiments.
+
+Notes
+-----
+The original institutional database is not included in this repository. Users
+must configure their own local data source when regenerating instances.
+"""
+
 
 import os
 import re
@@ -221,7 +235,7 @@ def sql_coalesce_group_key_expr(alias, primary_col, fallback_col):
 
 
 # ------------------------------------------------------------------------------------------
-# Helpers para diversificar aulas teóricas por curso (sin tocar laboratorios)
+# # Helper functions for diversifying theory-room candidates without changing laboratories
 # ------------------------------------------------------------------------------------------
 def _stable_int_seed(*parts) -> int:
     txt = "|".join(str(x or "").strip().upper() for x in parts)
@@ -328,7 +342,12 @@ FORCE_D = [norm_upper(x) for x in parse_env_list(get_env("FORCE_D_FROM_ENV", "")
 FORCE_H = parse_hours_env(get_env("FORCE_H_FROM_ENV", ""))
 H_OVERRIDE = safe_int(get_env("H_OVERRIDE", None), None)
 
-DATOS_JSON_TEMPLATE = get_env("DATOS_JSON", "salidas/datos_modelo_{periodo}.json")
+
+DATOS_JSON_TEMPLATE = (
+    get_env("DATA_JSON", "")
+    or get_env("DATOS_JSON", "data/samples/generated_instance_{periodo}.json")
+)
+
 LAB_COURSE_REGEX = re.compile(
     get_env("LAB_COURSE_REGEX", r"(?i)\b(LAB|LABORATORIO|PR(A|Á)CTIC(A|AS))\b"),
     re.IGNORECASE,
