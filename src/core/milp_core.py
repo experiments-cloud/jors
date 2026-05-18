@@ -1,17 +1,32 @@
-# model_solver.py
-# ==========================================================================================
-# Solver de horarios ISC para ITCM
-#
-# Mejoras principales de esta versión:
-#   1) Mantiene la ruta clásica (sin fijaciones) y la ruta de Fase 2 real.
-#   2) Soporta Fase 2.5:
-#      - fija profesor desde un calendario fuente
-#      - fija tiempo para teoría desde el calendario fuente
-#      - permite mover laboratorios en el tiempo para recuperar factibilidad de aulas
-#      - penaliza mover laboratorios fuera de sus bloques originales
-#   3) Mantiene preferencia institucional por aulas FF frente a E/EE/F.
-#   4) Mantiene CPLEX forzado (CPLEX_PY o CPLEX_CMD) sin fallback automático a CBC.
-# ==========================================================================================
+"""
+MILP Core
+=========
+
+Core MILP formulation and solver interface for the Academic Timetabling MILP
+repository.
+
+This module defines the optimization model, decision variables, hard
+constraints, objective function, solver configuration, and output-export
+routines used in the academic timetabling experiments.
+
+The implementation is intended for reproducible computational experiments
+using anonymized model-ready JSON instances.
+
+Main responsibilities
+---------------------
+- Load model-ready JSON timetabling instances.
+- Build the MILP formulation.
+- Define assignment, scheduling, and room-allocation variables.
+- Enforce hard institutional constraints.
+- Interface with the configured solver backend.
+- Export timetable, room, teacher, and validation outputs.
+
+Notes
+-----
+The original institutional database is not accessed by this module. Input data
+must be provided through anonymized JSON files or user-configured local files.
+"""
+
 
 from __future__ import annotations
 
@@ -2067,16 +2082,22 @@ def _infer_period_from_path_or_json(path: str) -> Optional[str]:
     m = re.search(r"(20\d{2}[12])", base) or re.search(r"(20\d{2})", base)
     return m.group(1) if m else None
 
-
 if __name__ == "__main__":
     _load_env()
-    _title("Model Solver ISC - CPLEX FORZADO")
+    _title("Academic Timetabling MILP - Solver execution")
     _echo_effective_env()
 
     periodo = os.getenv("MODEL_PERIODO", "") or ""
-    raw_base_json = os.getenv("DATOS_JSON", "salidas/datos_modelo_{periodo}.json")
-    base_json = raw_base_json.replace("{periodo}", periodo) if "{periodo}" in raw_base_json and periodo else raw_base_json
-    raw_export = os.getenv("EXPORT_PREFIX", "salidas/isc_{periodo}")
+    raw_base_json = os.getenv("DATA_JSON") or os.getenv(
+        "DATOS_JSON",
+        "data/samples/isc_20251_sample.json",
+    )
+    base_json = (
+        raw_base_json.replace("{periodo}", periodo)
+        if "{periodo}" in raw_base_json and periodo
+        else raw_base_json
+    )
+    raw_export = os.getenv("EXPORT_PREFIX", "outputs/example_run")
 
     patterns = []
     if any(sym in base_json for sym in ["*", "?", "["]):
