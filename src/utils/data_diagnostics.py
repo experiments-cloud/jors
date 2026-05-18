@@ -1,36 +1,115 @@
-import json, os, re, sys
+"""
+Data Diagnostics
+================
 
-JSON = sys.argv[1] if len(sys.argv)>1 else "salidas/datos_modelo_20241.json"
+Lightweight diagnostic utility for inspecting anonymized model-ready JSON
+instances used by the Academic Timetabling MILP repository.
 
-LAB_RE  = re.compile(os.getenv("LAB_COURSE_REGEX", r"(?i)\b(LAB|LABORATORI|TALLER|PR(A|Á)CTIC)\b"))
-DAYS    = 5   # si en tu JSON vienen D y H diferentes, cámbialo o léelo del JSON
-HOURS   = 6
+The script does not modify the input file. It prints basic information about
+sets, course-group pairs, required sessions, rooms, teachers, and aggregate
+weekly capacity.
 
-with open(JSON, "r", encoding="utf-8") as f:
-    d = json.load(f)
+Usage
+-----
+python src/utils/data_diagnostics.py data/samples/isc_20251_sample.json
+"""
 
-P,A,AT,AL = d["P"], d.get("A",[]), d.get("AT",[]), d.get("AL",[])
-D,H       = d.get("D", ["L","M","X","J","V"]), d.get("H", [1,2,3,4,5,6])
-MG,Hreq   = d["MG"], d["Hreq"]
+from __future__ import annotations
 
-days  = len(D) or DAYS
-hours = len(H) or HOURS
-cap_AT = len(AT) * days * hours
-cap_AL = len(AL) * days * hours
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict
 
-dem_total = 0
-dem_T = 0
-dem_L = 0
-for m,g in (tuple(x) if isinstance(x,(list,tuple)) else tuple(str(x).split("|",1)) for x in MG):
-    h = int(Hreq.get(f"{m}|{g}",0))
-    dem_total += h
-    if LAB_RE.search(m):
-        dem_L += h
+
+DEFAULT_JSON = "data/samples/isc_20251_sample.json"
+
+
+def load_json(path: str) -> Dict[str, Any]:
+    """Load a JSON file using UTF-8 encoding."""
+    with open(path, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def count_items(data: Dict[str, Any], key: str) -> int:
+    """Return the number of items stored under a JSON key."""
+    value = data.get(key, [])
+    if isinstance(value, dict):
+        return len(value)
+    if isinstance(value, list):
+        return len(value)
+    return 0
+
+
+def print_section(title: str) -> None:
+    """Print a formatted console section title."""
+    print()
+    print(title)
+    print("-" * len(title))
+
+
+def main() -> int:
+    """Run basic diagnostics for a model-ready JSON instance."""
+    json_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_JSON
+    path = Path(json_path)
+
+    if not path.is_file():
+        print("ERROR: JSON file was not found.")
+        print(f"Configured path: {json_path}")
+        return 1
+
+    data = load_json(str(path))
+
+    print_section("Instance file")
+    print(f"Path: {path}")
+
+    print_section("Set sizes")
+    for key in ["P", "A", "AT", "AL", "M", "G", "MG", "D", "H"]:
+        print(f"|{key}| = {count_items(data, key)}")
+
+    print_section("Required sessions")
+    hreq = data.get("Hreq", {}) or {}
+    total_sessions = sum(int(value) for value in hreq.values())
+    print(f"Hreq entries: {len(hreq)}")
+    print(f"Total required sessions: {total_sessions}")
+
+    print_section("Room capacities")
+    cap_a = data.get("cap_A", {}) or {}
+    if cap_a:
+        capacities = [int(value) for value in cap_a.values()]
+        print(f"Rooms with capacity: {len(capacities)}")
+        print(f"Minimum capacity: {min(capacities)}")
+        print(f"Maximum capacity: {max(capacities)}")
     else:
-        dem_T += h
+        print("No room-capacity data found.")
 
-print(f"|A|={len(A)} |AT|={len(AT)} |AL|={len(AL)}  D={days} H={hours}")
-print(f"Capacidad AT: {cap_AT}  Capacidad AL: {cap_AL}  Capacidad total: {cap_AT+cap_AL}")
-print(f"Demanda total (ΣHreq): {dem_total}")
-print(f"Demanda T: {dem_T} vs Cap_AT")
-print(f"Demanda L: {dem_L} vs Cap_AL")
+    print_section("Aggregate weekly capacity")
+    teachers = count_items(data, "P")
+    rooms = count_items(data, "A")
+    days = count_items(data, "D")
+    hours = count_items(data, "H")
+    weekly_blocks = days * hours
+
+    print(f"Weekly blocks: {weekly_blocks}")
+    print(f"Teacher capacity: {teachers * weekly_blocks}")
+    print(f"Room capacity: {rooms * weekly_blocks}")
+    print(f"Required sessions: {total_sessions}")
+
+    print_section("Consistency checks")
+    mg_pairs = data.get("MG", []) or []
+    mg_keys = {f"{course}|{group}" for course, group in mg_pairs}
+    missing_hreq = sorted(mg_keys - set(hreq.keys()))
+
+    if missing_hreq:
+        print(f"WARNING: missing Hreq values for {len(missing_hreq)} course-group pairs.")
+        print(f"Examples: {missing_hreq[:10]}")
+    else:
+        print("OK: Hreq covers all course-group pairs.")
+
+    print()
+    print("Diagnostics completed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
