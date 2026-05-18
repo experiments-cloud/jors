@@ -202,7 +202,7 @@ def _load_env():
 
     if chosen is None:
         load_dotenv(override=True)
-        _warn("No se encontró .env explícito; usando variables del proceso.")
+        _warn("Explicit .env file was not found; using process environment variables.")
     else:
         _warn(f".env cargado: {os.path.abspath(chosen)}")
 
@@ -462,14 +462,14 @@ def _solver_label(solver_obj) -> str:
 
 
 def _diagnose_cplex_installation():
-    _title("Diagnóstico CPLEX")
+    _title("CPLEX diagnostics")
     has_py = _has_cplex_py()
     if has_py:
         mod = _try_import_cplex_module()
         if mod is not None:
             _ok("CPLEX_PY: Disponible")
         else:
-            _err("CPLEX_PY: Módulo detectado pero no se pudo importar correctamente")
+            _err("CPLEX_PY: module detected but could not be imported correctly")
     else:
         _warn("CPLEX_PY: No disponible")
 
@@ -505,7 +505,7 @@ def _pick_solver(solver_name: Optional[str], time_limit_sec: int, msg: bool):
             if cplex_cmd:
                 _ok("Usando CPLEX_CMD (forzado por CPLEX_CMD_ONLY=1)")
                 return CPLEX_CMD_SAFE(path=cplex_cmd, msg=msg, timeLimit=time_limit_sec, options=cplex_opts, warmStart=warm_start)
-            raise RuntimeError("CPLEX_CMD_ONLY=1 pero no se encontró cplex.exe")
+            raise RuntimeError("CPLEX_CMD_ONLY=1 but cplex.exe was not found")
 
         if prefer_py and has_py:
             _ok("Usando CPLEX_PY (preferido)")
@@ -810,7 +810,7 @@ def _phase2_calendar_to_whitelist(base_json_path: str) -> str:
             cal_path = _norm_path(prefix + "_calendario.csv")
 
     if not cal_path or not os.path.isfile(cal_path):
-        _warn(f"PHASE2: no se encontró calendario fuente: {cal_path or '(vacío)'}")
+        _warn(f"PHASE2: source timetable was not found: {cal_path or '(vacío)'}")
         return base_json_path
 
     with open(base_json_path, "r", encoding="utf-8") as f:
@@ -962,7 +962,7 @@ def _apply_calendar_warm_start(export_prefix: str, MG, P_by_mg, A_by_mg, slots, 
 
     cal_path = _resolve_warm_start_calendar_path(export_prefix)
     if not cal_path or not os.path.isfile(cal_path):
-        _warn(f"Warm start: no se encontró calendario fuente: {cal_path or '(vacío)'}")
+        _warn(f"Warm start: source timetable was not found: {cal_path or '(vacío)'}")
         return 0
 
     use_room_warm_start = assign_rooms and _env_bool("WARM_START_INCLUDE_ROOMS", "0")
@@ -1017,7 +1017,7 @@ def _apply_calendar_warm_start(export_prefix: str, MG, P_by_mg, A_by_mg, slots, 
                         if not info["a"]:
                             info["a"] = a
     except Exception as e:
-        _warn(f"Warm start: no se pudo leer {cal_path}: {e}")
+        _warn(f"Warm start: could not read {cal_path}: {e}")
         return 0
 
     used_w = set()
@@ -1091,14 +1091,14 @@ def _apply_calendar_warm_start(export_prefix: str, MG, P_by_mg, A_by_mg, slots, 
     if total > 0:
         _title("Warm start desde calendario fuente")
         print(f"Calendario fuente : {cal_path}")
-        print(f"Filas CSV         : {counts['rows']}  | coincidencias modelo={counts['matched']}")
+        print(f"CSV rows          : {counts['rows']}  | model matches={counts['matched']}")
         print(f"Inicializaciones  : total={total}  z={counts['z']}  yhd={counts['yhd']}  xhd={counts['xhd']}  y={counts['ypmg']}  x={counts['xmg']}  w={counts['w']}")
         print(f"Descartes         : mg={counts['skip_mg']}  slot={counts['skip_slot']}  prof={counts['skip_prof']}  room={counts['skip_room']}")
         print(f"Defaults usados   : prof={counts['prof_default']}  room={counts['room_default']}")
         print(f"Cursos con aulas mixtas en fuente (sin fijar x) : {counts['room_mixed_course']}")
         print(f"WARM_START_INCLUDE_ROOMS = {1 if use_room_warm_start else 0}")
     else:
-        _warn(f"Warm start: {cal_path} leído, pero sin coincidencias útiles con el modelo actual.")
+        _warn(f"Warm start: {cal_path} was read, but no useful matches were found for the current model.")
     return total
 
 
@@ -1134,7 +1134,7 @@ def _load_fixed_calendar_info(export_prefix: str, MG, slots, P_candidates_by_mg,
     cal_path = _resolve_fix_calendar_path(export_prefix)
     info["path"] = cal_path
     if not cal_path or not os.path.isfile(cal_path):
-        msg = f"No se encontró FIX_SOURCE_CALENDAR: {cal_path or '(vacío)'}"
+        msg = f"FIX_SOURCE_CALENDAR was not found: {cal_path or '(vacío)'}"
         if strict:
             raise RuntimeError(msg)
         _warn(f"Fase 2: {msg}. Se omite fijación.")
@@ -1226,7 +1226,7 @@ def _load_fixed_calendar_info(export_prefix: str, MG, slots, P_candidates_by_mg,
     title_txt = "Fase 2.5: fijando profesor y relajando tiempo de labs" if relax_lab_time else "Fase 2 real: fijando tiempo y profesor desde calendario"
     _title(title_txt)
     print(f"Calendario fuente : {cal_path}")
-    print(f"Filas CSV         : {info['rows']}  | coincidencias modelo={info['matched']}")
+    print(f"CSV rows          : {info['rows']}  | model matches={info['matched']}")
     print(f"Descartes         : mg={info['skip_mg']}  slot={info['skip_slot']}  prof={info['skip_prof']}")
     print(f"Incidencias       : prof_multi={info['prof_multi']}  prof_default={info['prof_default']}  hreq_mismatch={info['hreq_mismatch']}")
     print(f"FIX_TIME_PROF_STRICT = {1 if strict else 0}")
@@ -1240,7 +1240,7 @@ def _load_fixed_calendar_info(export_prefix: str, MG, slots, P_candidates_by_mg,
 
 
 # ------------------------------------------------------------------------------------------
-# Diagnóstico / export de fallback
+# Fallback diagnostics and export
 # ------------------------------------------------------------------------------------------
 
 def _export_source_calendar_fallback(export_prefix: str, MG, P_by_mg, A_by_mg, slots, assign_rooms: bool, single_room: bool) -> bool:
@@ -1278,7 +1278,7 @@ def _export_source_calendar_fallback(export_prefix: str, MG, P_by_mg, A_by_mg, s
                     a = ""
                 rows_cal.append([m, g, h, d, a, p])
     except Exception as e:
-        _warn(f"Fallback: no se pudo leer calendario fuente {cal_path}: {e}")
+        _warn(f"Fallback: could not read source timetable {cal_path}: {e}")
         return False
 
     if not rows_cal:
@@ -1386,7 +1386,7 @@ def _echo_solver_preflight(json_path: str, export_prefix: str):
     print(f"Modulo 'cplex' (API Python) instalado? {_has_cplex_py()}")
     print("Se intentara CPLEX_CMD (ejecutable).")
 
-    print("\nConfiguracion de tolerancia:")
+    print("\nTolerance configuration:")
     print(f"STRICT_ROOM_SET           = {1 if _env_bool('STRICT_ROOM_SET', os.getenv('STRICT_ROOMSETS', '0')) else 0}")
     print(f"REQUIRE_CAPACITY_FOR_ROOM = {1 if _env_bool('REQUIRE_CAPACITY_FOR_ROOM', '1') else 0}")
     print(f"BYPASS_PREFLIGHT          = {1 if _env_bool('BYPASS_PREFLIGHT', '0') else 0}")
@@ -1398,7 +1398,7 @@ def _echo_solver_preflight(json_path: str, export_prefix: str):
     for k in ['FAST_MODE','RELAX_CONSTRAINTS','AUTO_RELAX','AUTO_ULTRA_RELAX','ASSIGN_ROOMS','SINGLE_ROOM_PER_COURSE']:
         print(f"{k:<25} = {1 if _env_bool(k, '0' if k in ['FAST_MODE','RELAX_CONSTRAINTS','AUTO_RELAX','AUTO_ULTRA_RELAX'] else '1') else 0}")
 
-    print("\nValidacion de tipos/regex:")
+    print("\nType and regex validation:")
     print(f"LAB_COURSE_REGEX    = {os.getenv('LAB_COURSE_REGEX') or LAB_RE.pattern}")
     print(f"SEM1_GROUP_REGEX    = {os.getenv('SEM1_GROUP_REGEX') or SEM1_RE.pattern}")
 
@@ -1579,7 +1579,7 @@ def _preflight_checks_with_candidates(data, P_by_mg, A_by_mg, slots, assign_room
         with_minH = [p for p in prof_sin_cursos if int(MinH.get(p, 0)) > 0]
         _warn(f"Profes SIN cursos candidatos: {len(prof_sin_cursos)}; con MinH>0 = {len(with_minH)}")
 
-    _ok("Chequeos preventivos: OK (modelo estricto)")
+    _ok("Preventive checks: OK (strict model)")
     return True
 
 
@@ -1626,7 +1626,7 @@ def _analyze_infeasibility(data, P_by_mg, A_by_mg, slots) -> Dict[str, Any]:
 
 
 # ------------------------------------------------------------------------------------------
-# Núcleo del modelo
+# Model core
 # ------------------------------------------------------------------------------------------
 
 def _build_and_solve(data: Dict[str, Any], assign_rooms: bool, single_room: bool, include_time: bool, TIME_LIMIT: int, fast_mode: bool, MAXP: int, MAXA: int, export_prefix: str, solver_name: Optional[str]) -> Tuple[bool, Optional[float], str]:
@@ -1690,7 +1690,7 @@ def _build_and_solve(data: Dict[str, Any], assign_rooms: bool, single_room: bool
         print(f"ROOM_BALANCE_TOL_FACTOR = {balance_tol_factor}")
         print(f"ROOM_BALANCE_BY_TYPE = {1 if balance_by_type else 0}")
 
-    _title("Construyendo modelo")
+    _title("Building model")
     prob = pl.LpProblem("Timetabling_ISC", pl.LpMinimize)
 
     y_pmg = {}
@@ -2109,7 +2109,7 @@ if __name__ == "__main__":
 
     json_files = sorted(set(sum([glob.glob(pat) for pat in patterns], [])))
     if not json_files:
-        _warn(f"No se encontraron JSON de entrada con patrón: {patterns}")
+        _warn(f"No input JSON files were found with pattern: {patterns}")
         raise SystemExit(1)
 
     _title(f"Archivos a resolver: {len(json_files)}")

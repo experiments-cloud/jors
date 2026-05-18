@@ -418,7 +418,7 @@ for alias, real in LAB_ALIAS_MAP.items():
 
 
 # ------------------------------------------------------------------------------------------
-# Configuración de whitelist diversificada para teoría
+# Diversified whitelist configuration for theory-room candidates
 # ------------------------------------------------------------------------------------------
 ENABLE_DIVERSIFIED_THEORY_WHITELIST = parse_bool(
     get_env("ENABLE_DIVERSIFIED_THEORY_WHITELIST", "1"), True
@@ -1438,7 +1438,7 @@ def emit_json(out_path, periodo, at_list, al_list, aulas_finales, room_whitelist
 
 
 def room_summary():
-    log.section("Resumen de aulas configuradas")
+    log.section("Configured room summary")
 
     a_set = set(A_DB)
     in_at = sorted([a for a in AT_CONF if a in a_set])
@@ -1481,7 +1481,7 @@ def room_summary():
 
 
 def course_summary():
-    log.section("Resumen de materias en catálogo")
+    log.section("Course-catalog summary")
     total = len(COURSE_INFO)
     labs = sum(1 for _, info in COURSE_INFO.items() if info.get("is_lab", False))
     with_h = sum(1 for _, info in COURSE_INFO.items() if info.get("hreq") is not None)
@@ -1491,7 +1491,7 @@ def course_summary():
 
 
 def isc_course_diagnostic():
-    log.section("Diagnóstico de materias ISC del periodo")
+    log.section("Period course diagnostics")
     rows = []
     for m in sorted(M_OBS):
         h_est, src = infer_hreq_for_materia(m)
@@ -1609,12 +1609,12 @@ def main():
     except Exception:
         pass
 
-    log.section("Resumen final")
+    log.section("Final summary")
     if WRITTEN:
         for path in WRITTEN:
             log.ok(f"Archivo generado: {path}")
     else:
-        log.warn("No se generó ningún archivo JSON.")
+        log.warn("No JSON file was generated.")
 
 
 if __name__ == "__main__":
