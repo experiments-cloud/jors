@@ -1,6 +1,5 @@
 # Academic Timetabling MILP
 
-
 This repository provides the source code, anonymized sample instances, representative outputs, and reproduction instructions for a Mixed-Integer Linear Programming (MILP) approach to university course timetabling.
 
 The model was designed to generate feasible academic timetables under institutional constraints such as teacher availability, classroom capacity, non-overlapping schedules, room-type compatibility, institutional room policies, and single-room assignment per course.
