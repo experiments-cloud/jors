@@ -15,6 +15,17 @@ __pycache__/
 *.sol
 *_tmp*
 _tmp*
+outputs/_tmp_*.json
+
+# Solver / execution logs
+*.log
+
+# Generated solver outputs
+outputs/*.csv
+outputs/*.txt
+
+# Temporary data backups
+data/samples/*.backup.json
 
 # Sensitive local anonymization mapping
 scripts/anonymization_map_LOCAL.csv

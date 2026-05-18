@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import io
 import json
+import glob
 import os
 import re
 import unicodedata
@@ -327,31 +328,81 @@ def discover_periods(template: str, suffix: str = "_timetable.csv") -> List[str]
 
 def discover_prefixes(prefix_template: str) -> List[str]:
     """Discover available output prefixes from modern and legacy timetable files."""
-    prefix_template = normalize_template(prefix_template)
-
-    if has_template(prefix_template):
-        prefix_part, suffix_part = prefix_template.split("{period}", 1)
-        output_prefixes = []
-        for suffix_candidate in _candidate_suffixes("timetable"):
-            pattern = f"{prefix_part}*{suffix_part}{suffix_candidate}"
-            for file_name in glob.glob(pattern):
-                if file_name.endswith(suffix_candidate):
-                    output_prefixes.append(file_name[: -len(suffix_candidate)])
-        return sorted(set(output_prefixes))
-
-    base = prefix_template.strip()
-    if not base:
-        return []
+    prefix_template = str(normalize_template(prefix_template))
 
     output_prefixes = []
-    for suffix_candidate in _candidate_suffixes("timetable"):
-        for file_name in glob.glob(base + "*" + suffix_candidate):
-            output_prefixes.append(file_name[: -len(suffix_candidate)])
-        if os.path.isfile(base + suffix_candidate):
+
+    # Timetable/calendar suffixes supported by the dashboard.
+    # _candidate_suffixes("timetable") usually includes the expected timetable suffixes,
+    # but we add the current Spanish export name as a safe fallback.
+    suffixes = list(_candidate_suffixes("timetable"))
+
+    for extra_suffix in [
+        "_calendario.csv",
+        "_timetable.csv",
+        "_calendar.csv",
+    ]:
+        if extra_suffix not in suffixes:
+            suffixes.append(extra_suffix)
+
+    # Case 1: template contains {period}
+    # Example: outputs/test_smoke_isc_{period}
+    if has_template(prefix_template):
+        prefix_part, suffix_part = prefix_template.split("{period}", 1)
+
+        prefix_part = str(prefix_part)
+        suffix_part = str(suffix_part)
+
+        for suffix_candidate in suffixes:
+            suffix_candidate = str(suffix_candidate or "")
+
+            if not suffix_candidate:
+                continue
+
+            pattern = f"{prefix_part}*{suffix_part}{suffix_candidate}"
+
+            for file_name in glob.glob(pattern):
+                file_name = str(file_name)
+
+                if file_name.endswith(suffix_candidate):
+                    output_prefixes.append(file_name[: -len(suffix_candidate)])
+
+        return sorted(set(output_prefixes))
+
+    # Case 2: direct prefix
+    # Example: outputs/test_smoke_isc_20251
+    base = str(prefix_template)
+
+    # If user accidentally passes the calendar file, convert it back to prefix.
+    for suffix_candidate in suffixes:
+        suffix_candidate = str(suffix_candidate or "")
+
+        if suffix_candidate and base.endswith(suffix_candidate):
+            base = base[: -len(suffix_candidate)]
+            break
+
+    for suffix_candidate in suffixes:
+        suffix_candidate = str(suffix_candidate or "")
+
+        if not suffix_candidate:
+            continue
+
+        pattern = base + "*" + suffix_candidate
+
+        for file_name in glob.glob(pattern):
+            file_name = str(file_name)
+
+            if file_name.endswith(suffix_candidate):
+                output_prefixes.append(file_name[: -len(suffix_candidate)])
+
+    # If the exact prefix exists through its calendario file, keep it.
+    for suffix_candidate in suffixes:
+        suffix_candidate = str(suffix_candidate or "")
+
+        if suffix_candidate and Path(base + suffix_candidate).exists():
             output_prefixes.append(base)
 
     return sorted(set(output_prefixes))
-
 
 # =============================================================================
 # File loading
@@ -1121,7 +1172,7 @@ else:
     )
 
 candidate_prefixes = [
-    prefix for prefix in discover_prefixes(prefix_template) if period in Path(prefix).name
+    prefix for prefix in discover_prefixes(prefix_template) if str(period) in Path(prefix).name
 ]
 expected_default = (
     render_template(prefix_template, period)
