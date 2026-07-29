@@ -1,15 +1,8 @@
 # An Exact Mixed-Integer Linear Programming Approach for Large-Scale University Timetabling: A Case Study
 
-Replication package for the *Journal of the Operational Research Society* (JORS) case-oriented paper by
-José Ángel Pérez Vázquez, Marco A. Aguirre L., Fausto Antonio Balderas-Jaramillo, Nelson Rangel Valdez,
-Claudia Guadalupe Gómez Santillán, and María Lucila Morales Rodríguez —
-Tecnológico Nacional de México / Instituto Tecnológico de Ciudad Madero (ITCM).
-
 This repository contains the exact Mixed-Integer Linear Programming (MILP) model, the anonymized
 institutional instance data, the raw CPLEX solver logs, and the figure-generation scripts needed to
 independently verify every quantitative claim made in the paper.
-
-**Corresponding author:** Marco A. Aguirre L. — `marco.al@cdmadero.tecnm.mx`
 
 ---
 
@@ -40,11 +33,6 @@ that verification independently.
 ├── README.md                    <- this file
 ├── LICENSE                      <- MIT (see note on anonymized data below)
 ├── requirements.txt
-├── paper/
-│   ├── main.tex                 <- full LaTeX source (Taylor & Francis "interact" class)
-│   ├── interactapasample.bib    <- bibliography (APA style via apacite), 38 entries
-│   ├── main.pdf                 <- compiled manuscript
-│   └── figures/                 <- the 6 figures used in the paper (PDF), each reproducible (see scripts/)
 ├── src/
 │   ├── run_solver.py            <- CLI entry point: builds the model, calls CPLEX, exports results
 │   └── core/
@@ -157,25 +145,8 @@ cd ../logs && sha256sum -c ../docs/CHECKSUMS.sha256 --ignore-missing
 
 ---
 
-## 8. Citing this work
-
-If you use this model, data, or code, please cite the paper:
-
-> Pérez Vázquez, J. A., Aguirre L., M. A., Balderas-Jaramillo, F. A., Rangel Valdez, N., Gómez Santillán,
-> C. G., & Morales Rodríguez, M. L. (2026). *An Exact Mixed-Integer Linear Programming Approach for
-> Large-Scale University Timetabling: A Case Study.* Journal of the Operational Research Society.
-
-A BibTeX entry will be added here once the DOI is assigned.
-
----
-
-## 9. License
+## 8. License
 
 Code is released under the MIT License (see `LICENSE`). The anonymized institutional data in `data/` and
 `logs/` is released under the same terms for research and educational reuse; see the note at the bottom of
 `LICENSE` for the specific conditions that apply to that data.
-
-## 10. Acknowledgements
-
-The authors thank the Tecnológico Nacional de México (TecNM) for institutional support and the
-Laboratorio Nacional de Tecnologías de la Información (LaNTI) for computing infrastructure.
