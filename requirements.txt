@@ -1,0 +1,17 @@
+# Core MILP model (src/core/milp_core.py, src/run_solver.py)
+pulp>=2.7
+python-dotenv>=1.0
+
+# Figure generation scripts (scripts/generate_fig*.py)
+matplotlib>=3.7
+numpy>=1.24
+
+# Notes:
+# - Solving the model requires IBM ILOG CPLEX Optimization Studio to be
+#   installed separately and licensed (academic licenses are free). PuLP
+#   calls the CPLEX command-line interface (CPLEX_CMD); no additional
+#   Python bindings are required.
+# - Without a CPLEX license, the model can still be built and inspected,
+#   and the anonymized instance data / solver logs in data/ and logs/
+#   can be used to verify the results reported in the paper without
+#   re-solving.
